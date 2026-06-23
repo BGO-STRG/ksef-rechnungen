@@ -57,7 +57,7 @@ Vollständiger Log aller Aktionen.
 | verkäufer_name | Muster GmbH |
 | verkäufer_nip | 1234567890 |
 | verkäufer_land | PL |
-| verkäufer_adresse | ul. Przykładowa 1 Warszawa |
+| verkäufer_adresse | ul. Przykładowa 1, 00-001 Warszawa |
 | käufer_name | Empfänger Sp. z o.o. |
 | käufer_nip | 9876543210 |
 | käufer_land | PL |
