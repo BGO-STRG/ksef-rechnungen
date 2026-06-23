@@ -1,0 +1,8 @@
+# KSeF Desktop-App – Abhängigkeiten
+# Python 3.10+ erforderlich (3.12 empfohlen)
+
+# KSeF 2.0 Python SDK (offizielle Community-Bibliothek)
+ksef2>=0.8.0
+
+# XML-Unterstützung (FA(3)-Schema)
+lxml>=5.0.0

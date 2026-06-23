@@ -1,0 +1,3 @@
+rechnungsnummer,datum,verkäufer_name,verkäufer_nip,verkäufer_land,verkäufer_adresse,käufer_name,käufer_nip,käufer_land,käufer_adresse,position_name,menge,einheit,einzelpreis_netto,mwst_satz
+FV/2026/06/0001,2026-06-23,Muster GmbH,1234567890,PL,ul. Przykładowa 1 Warszawa,Empfänger Sp. z o.o.,9876543210,PL,ul. Odbiorcza 20 Kraków,Beratungsleistung,10,h,200.00,23
+FV/2026/06/0002,2026-06-23,Muster GmbH,1234567890,PL,ul. Przykładowa 1 Warszawa,Kunde XYZ,5551234567,PL,ul. Testowa 5 Gdańsk,Softwareentwicklung,1,szt,5000.00,23
