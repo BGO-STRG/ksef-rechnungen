@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 KSeF Batch-Übermittlung
 Liest alle CSV-Dateien aus dem Ordner 'Rechnungen' neben der EXE,
@@ -33,15 +33,16 @@ CSV_FIELDNAMES = [
 ]
 
 def _csv_reader(f):
-    """DictReader mit automatischer Header-Erkennung."""
-    sample = f.read(512)
-    f.seek(0)
-    has_header = sample.lstrip("﻿").startswith("rechnungsnummer")
-    return csv.DictReader(
-        f,
-        fieldnames=None if has_header else CSV_FIELDNAMES,
-        delimiter=",", quotechar='"', skipinitialspace=True,
-    )
+    """Liest CSV mit oder ohne Ueberschrift, mit oder ohne BOM."""
+    rows_raw = list(csv.reader(f, delimiter=",", quotechar='"', skipinitialspace=True))
+    if not rows_raw:
+        return []
+    first = [c.strip().lstrip("﻿") for c in rows_raw[0]]
+    if first[0].lower() == "rechnungsnummer":
+        fieldnames, data = first, rows_raw[1:]
+    else:
+        fieldnames, data = CSV_FIELDNAMES, rows_raw
+    return [dict(zip(fieldnames, row)) for row in data if any(c.strip() for c in row)]
 
 def setup_dirs():
     DIR_RECHNUNGEN.mkdir(exist_ok=True)
@@ -205,8 +206,8 @@ def main():
 
         groups = []
         try:
-            with open(csv_file, newline="", encoding="utf-8") as f:
-                raw = list(_csv_reader(f))
+            with open(csv_file, newline="", encoding="utf-8-sig") as f:
+                raw = _csv_reader(f)
             groups = group_rows(raw)
             proto.log(f"   {len(raw)} Zeile(n) → {len(groups)} Rechnung(en)")
         except Exception as exc:
@@ -275,3 +276,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
