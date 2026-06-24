@@ -642,7 +642,8 @@ class KSeFApp(tk.Tk):
             self._tree.delete(item)
         try:
             with open(path, newline="", encoding="utf-8-sig") as f:
-                reader = csv.DictReader(f)
+                reader = csv.DictReader(f, delimiter=",", quotechar='"',
+                                        skipinitialspace=True)
                 for i, row in enumerate(reader, 1):
                     self._rows.append(row)
                     menge = Decimal(str(row.get("menge", "0")).strip())
