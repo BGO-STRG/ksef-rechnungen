@@ -41,6 +41,24 @@ F_TITLE   = ("Segoe UI", 13, "bold")
 F_SECTION = ("Segoe UI", 9, "bold")
 F_SMALL   = ("Segoe UI", 8)
 
+CSV_FIELDNAMES = [
+    "rechnungsnummer", "datum",
+    "verkäufer_name", "verkäufer_nip", "verkäufer_land", "verkäufer_adresse",
+    "käufer_name", "käufer_nip", "käufer_land", "käufer_adresse",
+    "position_name", "menge", "einheit", "einzelpreis_netto", "mwst_satz",
+]
+
+def _csv_reader(f):
+    """DictReader mit automatischer Header-Erkennung."""
+    sample = f.read(512)
+    f.seek(0)
+    has_header = sample.lstrip("﻿").startswith("rechnungsnummer")
+    return csv.DictReader(
+        f,
+        fieldnames=None if has_header else CSV_FIELDNAMES,
+        delimiter=",", quotechar='"', skipinitialspace=True,
+    )
+
 VAT_MAP_STR = {
     "23": "VAT_23", "22": "VAT_22", "8": "VAT_8",
     "5": "VAT_5", "0": "VAT_0", "zw": "EXEMPT", "np": "NOT_SUBJECT",
@@ -642,8 +660,7 @@ class KSeFApp(tk.Tk):
             self._tree.delete(item)
         try:
             with open(path, newline="", encoding="utf-8") as f:
-                reader = csv.DictReader(f, delimiter=",", quotechar='"',
-                                        skipinitialspace=True)
+                reader = _csv_reader(f)
                 for i, row in enumerate(reader, 1):
                     self._rows.append(row)
                     menge = Decimal(str(row.get("menge", "0")).strip())

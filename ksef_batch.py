@@ -25,6 +25,24 @@ DIR_PROTOKOLLE = BASE_DIR / "Protokolle"
 SETTINGS_FILE  = Path.home() / ".ksef_settings.json"
 
 
+CSV_FIELDNAMES = [
+    "rechnungsnummer", "datum",
+    "verkäufer_name", "verkäufer_nip", "verkäufer_land", "verkäufer_adresse",
+    "käufer_name", "käufer_nip", "käufer_land", "käufer_adresse",
+    "position_name", "menge", "einheit", "einzelpreis_netto", "mwst_satz",
+]
+
+def _csv_reader(f):
+    """DictReader mit automatischer Header-Erkennung."""
+    sample = f.read(512)
+    f.seek(0)
+    has_header = sample.lstrip("﻿").startswith("rechnungsnummer")
+    return csv.DictReader(
+        f,
+        fieldnames=None if has_header else CSV_FIELDNAMES,
+        delimiter=",", quotechar='"', skipinitialspace=True,
+    )
+
 def setup_dirs():
     DIR_RECHNUNGEN.mkdir(exist_ok=True)
     DIR_ARCHIV.mkdir(exist_ok=True)
@@ -178,8 +196,7 @@ def main():
         rows = []
         try:
             with open(csv_file, newline="", encoding="utf-8") as f:
-                rows = list(csv.DictReader(f, delimiter=",", quotechar='"',
-                                           skipinitialspace=True))
+                rows = list(_csv_reader(f))
             proto.log(f"   {len(rows)} Rechnung(en) geladen")
         except Exception as exc:
             proto.log(f"   FEHLER beim Lesen: {exc}")
