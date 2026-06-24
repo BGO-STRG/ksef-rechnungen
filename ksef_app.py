@@ -163,6 +163,7 @@ class KSeFApp(tk.Tk):
         self._active_tab = tk.StringVar(value="send")
 
         self._build_ui()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         if not KSEF_AVAILABLE:
             self._log("⚠  ksef2-Paket nicht gefunden — pip install ksef2", "warn")
@@ -809,6 +810,14 @@ class KSeFApp(tk.Tk):
         if self._results:
             self._export_btn.config(state="normal")
         self._status("Übermittlung abgeschlossen.")
+
+    def _on_close(self):
+        self._settings["token"]     = self._token_var.get().strip()
+        self._settings["nip"]       = self._nip_var.get().strip()
+        self._settings["env"]       = self._env_var.get()
+        self._settings["cert_path"] = self._cert_path_var.get().strip()
+        save_settings(self._settings)
+        self.destroy()
 
     def _export_results(self):
         if not self._results:
