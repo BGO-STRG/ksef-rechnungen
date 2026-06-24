@@ -59,46 +59,56 @@ def load_settings() -> dict:
     return {}
 
 
-def build_invoice_xml(row: dict):
-    from ksef2.fa3 import FA3InvoiceBuilder, VatRate
-    vat_key = str(row.get("mwst_satz", "23")).strip().lower()
-    vat_map = {
+def _vat_rate(row: dict):
+    from ksef2.fa3 import VatRate
+    return {
         "23": VatRate.VAT_23, "22": VatRate.VAT_22,
         "8":  VatRate.VAT_8,  "5":  VatRate.VAT_5,
         "0":  VatRate.VAT_0,  "zw": VatRate.EXEMPT,
         "np": VatRate.NOT_SUBJECT,
-    }
-    vat_rate = vat_map.get(vat_key, VatRate.VAT_23)
-    xml = (
+    }.get(str(row.get("mwst_satz", "23")).strip().lower(), None)
+
+def group_rows(rows: list) -> list:
+    """Gruppiert CSV-Zeilen nach Rechnungsnummer; behält Reihenfolge."""
+    groups: dict = {}
+    for row in rows:
+        nr = row.get("rechnungsnummer", "").strip()
+        groups.setdefault(nr, []).append(row)
+    return list(groups.values())
+
+def build_invoice_xml(group: list):
+    from ksef2.fa3 import FA3InvoiceBuilder, VatRate
+    head = group[0]
+    builder = (
         FA3InvoiceBuilder()
         .header(system_info="KSeF-Batch v1.0")
         .seller(
-            name=row["verkäufer_name"].strip(),
-            tax_id=row["verkäufer_nip"].strip(),
-            country_code=row["verkäufer_land"].strip().upper(),
-            address_line_1=row["verkäufer_adresse"].strip(),
+            name=head["verkäufer_name"].strip(),
+            tax_id=head["verkäufer_nip"].strip(),
+            country_code=head["verkäufer_land"].strip().upper(),
+            address_line_1=head["verkäufer_adresse"].strip(),
         )
         .buyer(
-            name=row["käufer_name"].strip(),
-            tax_id=row["käufer_nip"].strip() or None,
-            country_code=row["käufer_land"].strip().upper(),
-            address_line_1=row["käufer_adresse"].strip(),
+            name=head["käufer_name"].strip(),
+            tax_id=head["käufer_nip"].strip() or None,
+            country_code=head["käufer_land"].strip().upper(),
+            address_line_1=head["käufer_adresse"].strip(),
         )
         .standard()
-        .issue_date(date.fromisoformat(row["datum"].strip()))
-        .invoice_number(row["rechnungsnummer"].strip())
+        .issue_date(date.fromisoformat(head["datum"].strip()))
+        .invoice_number(head["rechnungsnummer"].strip())
         .rows()
-        .add_line(
+    )
+    for row in group:
+        vat = _vat_rate(row) or VatRate.VAT_23
+        builder = builder.add_line(
             name=row["position_name"].strip(),
             quantity=Decimal(str(row["menge"]).strip()),
-            unit_of_measure=row["einheit"].strip(),
+            unit_of_measure=row["einheit"].strip().lower(),
             unit_price_net=Decimal(str(row["einzelpreis_netto"]).strip()),
-            vat_rate=vat_rate,
+            vat_rate=vat,
         )
-        .done()
-        .done()
-        .to_xml()
-    )
+    xml = builder.done().done().to_xml()
     return xml.encode("utf-8") if isinstance(xml, str) else xml
 
 
@@ -193,17 +203,18 @@ def main():
         proto.log("")
         proto.log(f"── Verarbeite: {csv_file.name} ──")
 
-        rows = []
+        groups = []
         try:
             with open(csv_file, newline="", encoding="utf-8") as f:
-                rows = list(_csv_reader(f))
-            proto.log(f"   {len(rows)} Rechnung(en) geladen")
+                raw = list(_csv_reader(f))
+            groups = group_rows(raw)
+            proto.log(f"   {len(raw)} Zeile(n) → {len(groups)} Rechnung(en)")
         except Exception as exc:
             proto.log(f"   FEHLER beim Lesen: {exc}")
             total_err += 1
             continue
 
-        if not rows:
+        if not groups:
             proto.log("   Datei ist leer, wird übersprungen.")
             continue
 
@@ -216,23 +227,24 @@ def main():
         except Exception as exc:
             proto.log(f"   FEHLER beim Verbinden: {exc}")
             proto.log(traceback.format_exc())
-            total_err += len(rows)
-            total_rows += len(rows)
+            total_err += len(groups)
+            total_rows += len(groups)
             continue
 
         file_ok  = 0
         file_err = 0
 
-        for i, row in enumerate(rows, 1):
-            nr = row.get("rechnungsnummer", f"#{i}")
+        for i, group in enumerate(groups, 1):
+            nr  = group[0].get("rechnungsnummer", f"#{i}")
+            pos = len(group)
             try:
-                xml_bytes = build_invoice_xml(row)
+                xml_bytes = build_invoice_xml(group)
                 response  = session.send_invoice(invoice_xml=xml_bytes)
                 ref = getattr(response, "reference_number", str(response))
-                proto.log(f"   [{i}/{len(rows)}] {nr}  →  OK  Ref: {ref}")
+                proto.log(f"   [{i}/{len(groups)}] {nr} ({pos} Pos.)  →  OK  Ref: {ref}")
                 file_ok += 1
             except Exception as exc:
-                proto.log(f"   [{i}/{len(rows)}] {nr}  →  FEHLER: {exc}")
+                proto.log(f"   [{i}/{len(groups)}] {nr}  →  FEHLER: {exc}")
                 file_err += 1
 
         try:
@@ -243,7 +255,7 @@ def main():
         proto.log(f"   Ergebnis: {file_ok} OK / {file_err} Fehler")
         total_ok  += file_ok
         total_err += file_err
-        total_rows += len(rows)
+        total_rows += len(groups)
 
         # CSV ins Archiv verschieben
         archiv_ziel = DIR_ARCHIV / f"{ts}_{csv_file.name}"

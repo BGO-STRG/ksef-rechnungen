@@ -86,47 +86,63 @@ def save_settings(data: dict):
 
 # ── FA(3)-XML-Builder ────────────────────────────────────────────────────────
 
-def build_invoice_xml(row: dict) -> bytes:
-    if not KSEF_AVAILABLE:
-        raise RuntimeError("ksef2 nicht installiert")
-    vat_key = str(row.get("mwst_satz", "23")).strip().lower()
-    vat_map = {
+VAT_MAP = {
+    "23": None, "22": None, "8": None,
+    "5": None, "0": None, "zw": None, "np": None,
+}
+
+def _vat_rate(row: dict):
+    from ksef2.fa3 import VatRate
+    return {
         "23": VatRate.VAT_23, "22": VatRate.VAT_22,
         "8":  VatRate.VAT_8,  "5":  VatRate.VAT_5,
         "0":  VatRate.VAT_0,  "zw": VatRate.EXEMPT,
         "np": VatRate.NOT_SUBJECT,
-    }
-    vat_rate = vat_map.get(vat_key, VatRate.VAT_23)
-    xml = (
+    }.get(str(row.get("mwst_satz", "23")).strip().lower(), None)
+
+def group_rows(rows: list[dict]) -> list[list[dict]]:
+    """Gruppiert CSV-Zeilen nach Rechnungsnummer; behält Reihenfolge."""
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        nr = row.get("rechnungsnummer", "").strip()
+        groups.setdefault(nr, []).append(row)
+    return list(groups.values())
+
+def build_invoice_xml(group: list[dict]) -> bytes:
+    if not KSEF_AVAILABLE:
+        raise RuntimeError("ksef2 nicht installiert")
+    from ksef2.fa3 import FA3InvoiceBuilder, VatRate
+    head = group[0]
+    builder = (
         FA3InvoiceBuilder()
         .header(system_info="KSeF-Desktop-App v1.0")
         .seller(
-            name=row["verkäufer_name"].strip(),
-            tax_id=row["verkäufer_nip"].strip(),
-            country_code=row["verkäufer_land"].strip().upper(),
-            address_line_1=row["verkäufer_adresse"].strip(),
+            name=head["verkäufer_name"].strip(),
+            tax_id=head["verkäufer_nip"].strip(),
+            country_code=head["verkäufer_land"].strip().upper(),
+            address_line_1=head["verkäufer_adresse"].strip(),
         )
         .buyer(
-            name=row["käufer_name"].strip(),
-            tax_id=row["käufer_nip"].strip() or None,
-            country_code=row["käufer_land"].strip().upper(),
-            address_line_1=row["käufer_adresse"].strip(),
+            name=head["käufer_name"].strip(),
+            tax_id=head["käufer_nip"].strip() or None,
+            country_code=head["käufer_land"].strip().upper(),
+            address_line_1=head["käufer_adresse"].strip(),
         )
         .standard()
-        .issue_date(date.fromisoformat(row["datum"].strip()))
-        .invoice_number(row["rechnungsnummer"].strip())
+        .issue_date(date.fromisoformat(head["datum"].strip()))
+        .invoice_number(head["rechnungsnummer"].strip())
         .rows()
-        .add_line(
+    )
+    for row in group:
+        vat = _vat_rate(row) or VatRate.VAT_23
+        builder = builder.add_line(
             name=row["position_name"].strip(),
             quantity=Decimal(str(row["menge"]).strip()),
-            unit_of_measure=row["einheit"].strip(),
+            unit_of_measure=row["einheit"].strip().lower(),
             unit_price_net=Decimal(str(row["einzelpreis_netto"]).strip()),
-            vat_rate=vat_rate,
+            vat_rate=vat,
         )
-        .done()
-        .done()
-        .to_xml()
-    )
+    xml = builder.done().done().to_xml()
     return xml.encode("utf-8") if isinstance(xml, str) else xml
 
 # ── Hauptfenster ──────────────────────────────────────────────────────────────
@@ -660,19 +676,25 @@ class KSeFApp(tk.Tk):
             self._tree.delete(item)
         try:
             with open(path, newline="", encoding="utf-8") as f:
-                reader = _csv_reader(f)
-                for i, row in enumerate(reader, 1):
-                    self._rows.append(row)
-                    menge = Decimal(str(row.get("menge", "0")).strip())
-                    preis = Decimal(str(row.get("einzelpreis_netto", "0")).strip())
-                    self._tree.insert("", "end", values=(
-                        row.get("rechnungsnummer", f"#{i}"),
-                        row.get("datum", ""),
-                        row.get("käufer_name", ""),
-                        f"{menge * preis:,.2f}",
-                    ))
-            self._slog(f"✓ CSV geladen: {len(self._rows)} Rechnung(en)", "ok")
-            self._log(f"CSV geladen: {path} ({len(self._rows)} Rechnungen)", "ok")
+                raw = list(_csv_reader(f))
+            groups = group_rows(raw)
+            self._rows = groups
+            for group in groups:
+                head = group[0]
+                netto = sum(
+                    Decimal(str(r.get("menge", "0")).strip()) *
+                    Decimal(str(r.get("einzelpreis_netto", "0")).strip())
+                    for r in group
+                )
+                pos = len(group)
+                self._tree.insert("", "end", values=(
+                    head.get("rechnungsnummer", ""),
+                    head.get("datum", ""),
+                    head.get("käufer_name", ""),
+                    f"{netto:,.2f}" + (f" ({pos} Pos.)" if pos > 1 else ""),
+                ))
+            self._slog(f"✓ CSV geladen: {len(self._rows)} Rechnung(en) aus {len(raw)} Zeile(n)", "ok")
+            self._log(f"CSV geladen: {path} ({len(raw)} Zeilen → {len(self._rows)} Rechnungen)", "ok")
             self._status(f"{len(self._rows)} Rechnungen bereit")
         except Exception as exc:
             self._slog(f"✗ CSV-Fehler: {exc}", "err")
@@ -744,20 +766,21 @@ class KSeFApp(tk.Tk):
             session = auth.online_session(form_code=FormSchema.FA3)
 
             ok, err = 0, 0
-            for i, row in enumerate(self._rows, 1):
-                nr = row.get("rechnungsnummer", f"#{i}")
+            for i, group in enumerate(self._rows, 1):
+                nr = group[0].get("rechnungsnummer", f"#{i}")
+                pos = len(group)
                 try:
-                    self._slog(f"  [{i}/{len(self._rows)}] {nr}", "info")
-                    xml_bytes = build_invoice_xml(row)
+                    self._slog(f"  [{i}/{len(self._rows)}] {nr} ({pos} Pos.)", "info")
+                    xml_bytes = build_invoice_xml(group)
                     response  = session.send_invoice(invoice_xml=xml_bytes)
                     ref = getattr(response, "reference_number", str(response))
-                    self._results.append({"rechnungsnummer": nr,
+                    self._results.append({"rechnungsnummer": nr, "positionen": pos,
                                           "status": "ok", "ksef_ref": ref})
                     self._slog(f"  ✓  Ref: {ref}", "ok")
                     self._log(f"{nr}  →  ✓  {ref}", "ok")
                     ok += 1
                 except Exception as exc:
-                    self._results.append({"rechnungsnummer": nr,
+                    self._results.append({"rechnungsnummer": nr, "positionen": pos,
                                           "status": "fehler", "fehler": str(exc)})
                     self._slog(f"  ✗  {exc}", "err")
                     self._log(f"{nr}  →  ✗  {exc}", "err")
