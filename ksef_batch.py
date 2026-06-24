@@ -177,7 +177,7 @@ def main():
 
         rows = []
         try:
-            with open(csv_file, newline="", encoding="utf-8-sig") as f:
+            with open(csv_file, newline="", encoding="utf-8") as f:
                 rows = list(csv.DictReader(f, delimiter=",", quotechar='"',
                                            skipinitialspace=True))
             proto.log(f"   {len(rows)} Rechnung(en) geladen")

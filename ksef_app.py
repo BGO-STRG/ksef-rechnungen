@@ -641,7 +641,7 @@ class KSeFApp(tk.Tk):
         for item in self._tree.get_children():
             self._tree.delete(item)
         try:
-            with open(path, newline="", encoding="utf-8-sig") as f:
+            with open(path, newline="", encoding="utf-8") as f:
                 reader = csv.DictReader(f, delimiter=",", quotechar='"',
                                         skipinitialspace=True)
                 for i, row in enumerate(reader, 1):
