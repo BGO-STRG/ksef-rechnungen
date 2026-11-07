@@ -4,19 +4,25 @@ KSeF Rechnungsübermittlung – Desktop-App
 Liest CSV-Rechnungsdaten ein und übermittelt diese an KSeF API 2.0 (FA(3)).
 """
 
-import csv
 import json
-import os
+import sys
 import threading
 import tkinter as tk
-from datetime import date
-from decimal import Decimal
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
+from ksef_utils import (
+    BASE_DIR, DIR_RECHNUNGEN, DIR_ARCHIV, DIR_ERGEBNISSE, DIR_UPO, DIR_PROTOKOLLE,
+    SETTINGS_FILE,
+    _csv_reader, _normalize_nip, group_rows, build_invoice_xml,
+    generate_pdf, write_protocol, setup_dirs, _calc_netto,
+    extract_response, download_upo, invoice_warnings,
+    build_qr_url, write_feedback_csv,
+)
+
 try:
-    from ksef2 import Client, Environment, FormSchema, KSeFException
-    from ksef2.fa3 import FA3InvoiceBuilder, VatRate
+    from ksef2 import Client, Environment, FormSchema
     KSEF_AVAILABLE = True
 except ImportError:
     KSEF_AVAILABLE = False
@@ -41,32 +47,6 @@ F_TITLE   = ("Segoe UI", 13, "bold")
 F_SECTION = ("Segoe UI", 9, "bold")
 F_SMALL   = ("Segoe UI", 8)
 
-CSV_FIELDNAMES = [
-    "rechnungsnummer", "datum",
-    "verkäufer_name", "verkäufer_nip", "verkäufer_land", "verkäufer_adresse",
-    "käufer_name", "käufer_nip", "käufer_land", "käufer_adresse",
-    "position_name", "menge", "einheit", "einzelpreis_netto", "mwst_satz",
-]
-
-def _csv_reader(f):
-    """Liest CSV mit oder ohne Ueberschrift, mit oder ohne BOM."""
-    rows_raw = list(csv.reader(f, delimiter=",", quotechar='"', skipinitialspace=True))
-    if not rows_raw:
-        return []
-    first = [c.strip().lstrip("﻿") for c in rows_raw[0]]
-    if first[0].lower() == "rechnungsnummer":
-        fieldnames, data = first, rows_raw[1:]
-    else:
-        fieldnames, data = CSV_FIELDNAMES, rows_raw
-    return [dict(zip(fieldnames, row)) for row in data if any(c.strip() for c in row)]
-
-VAT_MAP_STR = {
-    "23": "VAT_23", "22": "VAT_22", "8": "VAT_8",
-    "5": "VAT_5", "0": "VAT_0", "zw": "EXEMPT", "np": "NOT_SUBJECT",
-}
-
-SETTINGS_FILE = Path.home() / ".ksef_settings.json"
-
 # ── Einstellungen laden/speichern ─────────────────────────────────────────────
 
 def load_settings() -> dict:
@@ -85,67 +65,6 @@ def save_settings(data: dict):
     except Exception:
         pass
 
-# ── FA(3)-XML-Builder ────────────────────────────────────────────────────────
-
-VAT_MAP = {
-    "23": None, "22": None, "8": None,
-    "5": None, "0": None, "zw": None, "np": None,
-}
-
-def _vat_rate(row: dict):
-    from ksef2.fa3 import VatRate
-    return {
-        "23": VatRate.VAT_23, "22": VatRate.VAT_22,
-        "8":  VatRate.VAT_8,  "5":  VatRate.VAT_5,
-        "0":  VatRate.VAT_0,  "zw": VatRate.EXEMPT,
-        "np": VatRate.NOT_SUBJECT,
-    }.get(str(row.get("mwst_satz", "23")).strip().lower(), None)
-
-def group_rows(rows: list[dict]) -> list[list[dict]]:
-    """Gruppiert CSV-Zeilen nach Rechnungsnummer; behält Reihenfolge."""
-    groups: dict[str, list[dict]] = {}
-    for row in rows:
-        nr = row.get("rechnungsnummer", "").strip()
-        groups.setdefault(nr, []).append(row)
-    return list(groups.values())
-
-def build_invoice_xml(group: list[dict]) -> bytes:
-    if not KSEF_AVAILABLE:
-        raise RuntimeError("ksef2 nicht installiert")
-    from ksef2.fa3 import FA3InvoiceBuilder, VatRate
-    head = group[0]
-    builder = (
-        FA3InvoiceBuilder()
-        .header(system_info="KSeF-Desktop-App v1.0")
-        .seller(
-            name=head["verkäufer_name"].strip(),
-            tax_id=head["verkäufer_nip"].strip(),
-            country_code=head["verkäufer_land"].strip().upper(),
-            address_line_1=head["verkäufer_adresse"].strip(),
-        )
-        .buyer(
-            name=head["käufer_name"].strip(),
-            tax_id=head["käufer_nip"].strip() or None,
-            country_code=head["käufer_land"].strip().upper(),
-            address_line_1=head["käufer_adresse"].strip(),
-        )
-        .standard()
-        .issue_date(date.fromisoformat(head["datum"].strip()))
-        .invoice_number(head["rechnungsnummer"].strip())
-        .rows()
-    )
-    for row in group:
-        vat = _vat_rate(row) or VatRate.VAT_23
-        builder = builder.add_line(
-            name=row["position_name"].strip(),
-            quantity=Decimal(str(row["menge"]).strip()),
-            unit_of_measure=row["einheit"].strip().lower(),
-            unit_price_net=Decimal(str(row["einzelpreis_netto"]).strip()),
-            vat_rate=vat,
-        )
-    xml = builder.done().done().to_xml()
-    return xml.encode("utf-8") if isinstance(xml, str) else xml
-
 # ── Hauptfenster ──────────────────────────────────────────────────────────────
 
 class KSeFApp(tk.Tk):
@@ -160,7 +79,10 @@ class KSeFApp(tk.Tk):
         self._csv_path: str | None = None
         self._rows: list[dict] = []
         self._results: list[dict] = []
+        self._tx_log: list[str] = []
+        self._send_start: datetime = datetime.now()
         self._active_tab = tk.StringVar(value="send")
+        setup_dirs()
 
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -340,39 +262,40 @@ class KSeFApp(tk.Tk):
         """Zeigt die aktuelle Konfiguration (Token, NIP, Umgebung) read-only an."""
         self._section_card(parent, "🔐  Aktuelle Konfiguration")
 
-        self._cfg_token_var = tk.StringVar()
-        self._cfg_nip_var   = tk.StringVar()
-        self._cfg_env_var   = tk.StringVar()
-        self._update_config_display()
-
-        for label, var, mask in [
-            ("Token",      self._cfg_token_var, True),
-            ("NIP",        self._cfg_nip_var,   False),
-            ("Umgebung",   self._cfg_env_var,   False),
-        ]:
+        self._cfg_labels: dict[str, tk.Label] = {}
+        for label in ("Token", "NIP", "Umgebung"):
             row = tk.Frame(parent, bg=C_BG)
             row.pack(fill="x", pady=2)
             tk.Label(row, text=label, font=F_SMALL,
                      bg=C_BG, fg=C_MUTED, width=10, anchor="w").pack(side="left")
-            disp = var.get()
-            if mask and len(disp) > 8:
-                disp = disp[:4] + "••••" + disp[-4:]
-            tk.Label(row, text=disp if disp else "–",
-                     font=F_MONO, bg=C_BG,
-                     fg=C_GREEN if disp else C_ERROR, anchor="w").pack(
-                side="left", padx=(4, 0))
+            lbl = tk.Label(row, text="–", font=F_MONO, bg=C_BG,
+                           fg=C_ERROR, anchor="w")
+            lbl.pack(side="left", padx=(4, 0))
+            self._cfg_labels[label] = lbl
 
         tk.Label(parent, text="↗ In Einstellungen bearbeiten",
                  font=F_SMALL, bg=C_BG, fg=C_ACCENT,
                  cursor="hand2").pack(anchor="w", pady=(4, 0))
         parent.winfo_toplevel().bind(
             "<<SettingsSaved>>", lambda e: self._update_config_display())
+        self._update_config_display()
 
     def _update_config_display(self):
         s = self._settings
-        self._cfg_token_var.set(s.get("token", ""))
-        self._cfg_nip_var.set(s.get("nip", ""))
-        self._cfg_env_var.set(s.get("env", "TEST"))
+        token = s.get("token", "").strip()
+        nip   = s.get("nip", "").strip()
+        env   = s.get("env", "TEST")
+
+        if token and len(token) > 8:
+            token_disp = token[:4] + "••••" + token[-4:]
+        else:
+            token_disp = token
+
+        for key, val in [("Token", token_disp), ("NIP", nip), ("Umgebung", env)]:
+            lbl = self._cfg_labels.get(key)
+            if lbl:
+                lbl.config(text=val if val else "–",
+                           fg=C_GREEN if val else C_ERROR)
 
     # ── Tab: Einstellungen ──────────────────────────────────────────────────
 
@@ -639,21 +562,20 @@ class KSeFApp(tk.Tk):
 
     def _save_settings(self):
         self._settings["token"]     = self._token_var.get().strip()
-        self._settings["nip"]       = self._nip_var.get().strip()
+        self._settings["nip"]       = _normalize_nip(self._nip_var.get())
         self._settings["env"]       = self._env_var.get()
         self._settings["cert_path"] = self._cert_path_var.get().strip()
+        nip = self._settings["nip"]
+        if nip and len(nip) != 10:
+            messagebox.showwarning("NIP ungültig",
+                f"NIP muss genau 10 Ziffern haben (aktuell: {len(nip)}).\n"
+                f"Bereinigt: {nip}")
         save_settings(self._settings)
         self._save_status_var.set("✓ Gespeichert")
         self.after(2500, lambda: self._save_status_var.set(""))
-        self._rebuild_config_card()
+        self._update_config_display()
         self._log("Einstellungen gespeichert.", "ok")
         self._slog("⚙ Einstellungen gespeichert.", "ok")
-
-    def _rebuild_config_card(self):
-        """Aktualisiert die Konfigurations-Anzeige im Send-Tab."""
-        self._cfg_token_var.set(self._settings.get("token", ""))
-        self._cfg_nip_var.set(self._settings.get("nip", ""))
-        self._cfg_env_var.set(self._settings.get("env", "TEST"))
 
     def _pick_csv(self):
         path = filedialog.askopenfilename(
@@ -683,16 +605,12 @@ class KSeFApp(tk.Tk):
             self._rows = groups
             for group in groups:
                 head = group[0]
-                netto = sum(
-                    Decimal(str(r.get("menge", "0")).strip()) *
-                    Decimal(str(r.get("einzelpreis_netto", "0")).strip())
-                    for r in group
-                )
+                netto = _calc_netto(group)
                 pos = len(group)
                 self._tree.insert("", "end", values=(
                     head.get("rechnungsnummer", ""),
                     head.get("datum", ""),
-                    head.get("käufer_name", ""),
+                    head.get("kaeufer_name", ""),
                     f"{netto:,.2f}" + (f" ({pos} Pos.)" if pos > 1 else ""),
                 ))
             self._slog(f"✓ CSV geladen: {len(self._rows)} Rechnung(en) aus {len(raw)} Zeile(n)", "ok")
@@ -711,16 +629,26 @@ class KSeFApp(tk.Tk):
             return
         token = self._settings.get("token", "").strip()
         nip   = self._settings.get("nip", "").strip()
-        if not token or not nip:
+        env   = self._settings.get("env", "TEST")
+        if not nip:
             messagebox.showwarning(
                 "Konfiguration unvollständig",
-                "Bitte Token und NIP unter ⚙ Einstellungen eingeben.")
+                "Bitte NIP unter ⚙ Einstellungen eingeben.")
+            self._switch_tab("settings")
+            return
+        if not token and env != "TEST":
+            messagebox.showwarning(
+                "Konfiguration unvollständig",
+                "Token wird benötigt für PRODUCTION/DEMO.\n"
+                "Für TEST kann auch das Test-Zertifikat (ohne Token) verwendet werden.")
             self._switch_tab("settings")
             return
 
         self._send_btn.config(state="disabled")
         self._export_btn.config(state="disabled")
         self._results.clear()
+        self._tx_log.clear()
+        self._send_start = datetime.now()
         self._progress.start(12)
         self._status("Übermittle …")
         self._slog("─" * 44, "head")
@@ -758,10 +686,13 @@ class KSeFApp(tk.Tk):
                     key  = load_private_key_from_pem(cert_path)
                     auth = client.authentication.with_xades(
                         nip=s["nip"], cert=cert, private_key=key)
-            else:
+            elif s.get("token", "").strip():
                 self._slog("🔑 Token-Authentifizierung …", "info")
                 auth = client.authentication.with_token(
                     ksef_token=s["token"], nip=s["nip"])
+            else:
+                self._slog("🔑 Test-Zertifikat-Authentifizierung …", "info")
+                auth = client.authentication.with_test_certificate(nip=s["nip"])
 
             self._slog("✓ Authentifiziert. Öffne Sitzung …", "ok")
             self._log("Authentifiziert. Sitzung geöffnet.", "ok")
@@ -773,13 +704,36 @@ class KSeFApp(tk.Tk):
                 pos = len(group)
                 try:
                     self._slog(f"  [{i}/{len(self._rows)}] {nr} ({pos} Pos.)", "info")
+                    for w in invoice_warnings(group):
+                        self._slog(f"     ⚠ Hinweis: {w}", "warn")
+                        self._log(f"{nr}  ⚠ {w}", "warn")
                     xml_bytes = build_invoice_xml(group)
-                    response  = session.send_invoice(invoice_xml=xml_bytes)
-                    ref = getattr(response, "reference_number", str(response))
-                    self._results.append({"rechnungsnummer": nr, "positionen": pos,
-                                          "status": "ok", "ksef_ref": ref})
-                    self._slog(f"  ✓  Ref: {ref}", "ok")
-                    self._log(f"{nr}  →  ✓  {ref}", "ok")
+                    response  = session.send_invoice_and_wait(
+                        invoice_xml=xml_bytes, timeout=90.0)
+                    data = extract_response(response)
+                    result = {"rechnungsnummer": nr, "positionen": pos,
+                              "status": "ok", "ksef_ref": data["reference_number"],
+                              **data}
+                    # QR-Verifizierungslink (KOD I) für die Warenwirtschaft
+                    result["qr_url"] = build_qr_url(
+                        s.get("env", "TEST"),
+                        group[0].get("verkaeufer_nip", s.get("nip", "")),
+                        group[0].get("datum", ""),
+                        invoice_hash_b64=data.get("invoice_hash", ""),
+                        xml_bytes=xml_bytes,
+                    )
+
+                    # UPO herunterladen (amtliche Empfangsbestätigung)
+                    if data.get("upo_download_url") and data.get("ksef_number"):
+                        upo_dest = DIR_UPO / f"UPO_{data['ksef_number']}.xml"
+                        if download_upo(data["upo_download_url"], upo_dest):
+                            result["upo_file"] = upo_dest.name
+                            self._slog(f"     UPO gespeichert: {upo_dest.name}", "info")
+
+                    self._results.append(result)
+                    self._slog(f"  ✓  KSeF-Nr: {data['ksef_number']}", "ok")
+                    self._log(f"{nr}  →  ✓  KSeF-Nr {data['ksef_number']}  "
+                              f"(Ref {data['reference_number']})", "ok")
                     ok += 1
                 except Exception as exc:
                     self._results.append({"rechnungsnummer": nr, "positionen": pos,
@@ -795,14 +749,65 @@ class KSeFApp(tk.Tk):
 
             summary = f"Fertig: {ok} ✓  /  {err} ✗"
             self._slog("─" * 44, "head")
-            self._slog(summary, "ok")
-            self._log(summary, "ok")
+            self._slog(summary, "ok" if err == 0 else "warn")
+            self._log(summary, "ok" if err == 0 else "warn")
+
+            # ── PDF, Protokoll, Archiv ──────────────────────────────────
+            if self._results and self._csv_path:
+                self._post_process(self._results, self._rows, s, self._send_start)
 
         except Exception as exc:
+            import traceback
             self._slog(f"✗ Verbindungsfehler: {exc}", "err")
             self._log(f"Verbindungsfehler: {exc}", "err")
+            self._log(traceback.format_exc(), "err")
         finally:
             self.after(0, self._send_done)
+
+    def _post_process(self, results, groups, settings, start_time):
+        """Erstellt PDF + Protokoll und archiviert die CSV (im Hintergrundthread)."""
+        try:
+            setup_dirs()
+            ts       = start_time.strftime("%Y-%m-%d_%H-%M-%S")
+            csv_stem = Path(self._csv_path).stem
+            csv_name = Path(self._csv_path).name
+
+            pdf_path   = DIR_ERGEBNISSE / f"{ts}_{csv_stem}.pdf"
+            proto_path = DIR_PROTOKOLLE / f"{ts}_{csv_stem}_protokoll.txt"
+
+            try:
+                generate_pdf(results, groups, settings, pdf_path, csv_name, start_time)
+                self.after(0, lambda p=pdf_path.name: self._slog(f"✓ PDF: {p}", "ok"))
+            except Exception as e:
+                self.after(0, lambda e=e: self._slog(f"⚠ PDF-Fehler: {e}", "warn"))
+
+            try:
+                write_protocol(results, groups, settings, csv_name,
+                               start_time, proto_path, list(self._tx_log))
+                self.after(0, lambda p=proto_path.name: self._slog(f"✓ Protokoll: {p}", "ok"))
+            except Exception as e:
+                self.after(0, lambda e=e: self._slog(f"⚠ Protokoll-Fehler: {e}", "warn"))
+
+            # Rückmelde-CSV für die Warenwirtschaft (KSeF-Nr. + QR-URL, ohne Kopfzeile)
+            try:
+                fb_path = DIR_ERGEBNISSE / f"{ts}_{csv_stem}_ksef.csv"
+                if write_feedback_csv(results, fb_path):
+                    self.after(0, lambda p=fb_path.name: self._slog(f"✓ Rückmeldung: {p}", "ok"))
+            except Exception as e:
+                self.after(0, lambda e=e: self._slog(f"⚠ Rückmeldung-Fehler: {e}", "warn"))
+
+            # CSV archivieren wenn sie im Rechnungen-Ordner liegt
+            try:
+                csv_path = Path(self._csv_path)
+                if csv_path.exists() and csv_path.parent.resolve() == DIR_RECHNUNGEN.resolve():
+                    ziel = DIR_ARCHIV / f"{ts}_{csv_name}"
+                    csv_path.rename(ziel)
+                    self.after(0, lambda n=ziel.name: self._slog(f"✓ Archiviert: {n}", "ok"))
+            except Exception as e:
+                self.after(0, lambda e=e: self._slog(f"⚠ Archiv-Fehler: {e}", "warn"))
+
+        except Exception as e:
+            self.after(0, lambda e=e: self._slog(f"⚠ Nachbearbeitung fehlgeschlagen: {e}", "warn"))
 
     def _send_done(self):
         self._progress.stop()
@@ -813,7 +818,7 @@ class KSeFApp(tk.Tk):
 
     def _on_close(self):
         self._settings["token"]     = self._token_var.get().strip()
-        self._settings["nip"]       = self._nip_var.get().strip()
+        self._settings["nip"]       = _normalize_nip(self._nip_var.get())
         self._settings["env"]       = self._env_var.get()
         self._settings["cert_path"] = self._cert_path_var.get().strip()
         save_settings(self._settings)
@@ -855,7 +860,8 @@ class KSeFApp(tk.Tk):
         self._log_area.config(state="disabled")
 
     def _slog(self, msg: str, tag: str = "info"):
-        """Schreibt in den Mini-Log des Send-Tabs."""
+        """Schreibt in den Mini-Log des Send-Tabs und in den TX-Log."""
+        self._tx_log.append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
         def _ins():
             self._send_log.config(state="normal")
             self._send_log.insert("end", msg + "\n", tag)

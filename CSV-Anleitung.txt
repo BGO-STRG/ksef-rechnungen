@@ -1,0 +1,224 @@
+================================================================================
+  KSeF-Rechnungen — Anleitung zur CSV-Datei
+================================================================================
+
+So legst du CSV-Dateien an, die das Programm fehlerfrei verarbeitet.
+Eine fertige Beispieldatei findest du unter:  rechnungen_vorlage.csv
+
+
+--------------------------------------------------------------------------------
+  1) ALLGEMEINES FORMAT
+--------------------------------------------------------------------------------
+
+  • Trennzeichen:   Komma  ( , )
+  • Textfelder:     in Anführungszeichen ( "..." ) — empfohlen, Pflicht sobald
+                    ein Feld selbst ein Komma enthält (z. B. Adressen).
+  • Kodierung:      UTF-8 (mit oder ohne BOM) — für Excel am besten UTF-8 mit BOM.
+  • Zeilenende:     LF oder CR/LF — beides wird akzeptiert.
+  • Überschrift:    optional. Mit Überschriftzeile ist die Spaltenreihenfolge egal,
+                    weil nach Spaltennamen zugeordnet wird. Ohne Überschrift muss
+                    die Reihenfolge exakt der Tabelle unten entsprechen (Spalte 1–22).
+  • Mehrere Dateien: Es dürfen mehrere CSV-Dateien gleichzeitig im Ordner liegen.
+
+
+--------------------------------------------------------------------------------
+  2) SPALTEN — PFLICHTFELDER (Spalte 1 bis 15)
+--------------------------------------------------------------------------------
+
+  #   Spaltenname          Beschreibung                         Beispiel
+  --  -------------------  -----------------------------------  --------------------
+  1   rechnungsnummer      Rechnungsnummer. Mehrere Zeilen mit  FV/2026/06/0001
+                           GLEICHER Nummer = eine Rechnung mit
+                           mehreren Positionen.
+  2   datum                Rechnungsdatum (YYYY-MM-DD).         2026-06-23
+  3   verkäufer_name       Name des Verkäufers.                 Muster GmbH
+  4   verkäufer_nip        Steuernummer Verkäufer (PL: NIP,     1234567890
+                           10 Ziffern, ohne Bindestriche).
+  5   verkäufer_land       Ländercode (2 Buchstaben).           PL
+  6   verkäufer_adresse    Anschrift Verkäufer (eine Zeile).    ul. Przykładowa 1 Warszawa
+  7   käufer_name          Name des Käufers.                    Empfänger Sp. z o.o.
+  8   käufer_nip           Steuernummer Käufer. Bei Privat-     9876543210
+                           personen leer lassen.
+  9   käufer_land          Ländercode Käufer (2 Buchstaben).    PL
+  10  käufer_adresse       Anschrift Käufer (eine Zeile).       ul. Odbiorcza 20 Kraków
+  11  position_name        Bezeichnung der Leistung/Ware.       Beratungsleistung
+  12  menge                Menge (Dezimal, Punkt oder Komma).   10   bzw.  10.5
+  13  einheit              Mengeneinheit.                       h, szt, kg, ...
+  14  einzelpreis_netto    Nettopreis pro Einheit. Bis zu 8     200.00
+                           Nachkommastellen erlaubt (FA(3)).    4.12345678
+  15  mwst_satz            MwSt-Satz, siehe erlaubte Werte.     23
+
+
+--------------------------------------------------------------------------------
+  3) SPALTEN — ZUSATZFELDER (Spalte 16 bis 22, OPTIONAL)
+--------------------------------------------------------------------------------
+
+  Diese Felder dürfen leer bleiben. Wenn leer, gilt der jeweilige Standard.
+
+  #   Spaltenname          Beschreibung                         Beispiel
+  --  -------------------  -----------------------------------  --------------------
+  16  währung              Währungscode (3 Buchstaben).         PLN, EUR, USD
+                           Leer = PLN (Standard).
+  17  wechselkurs          Umrechnungskurs zu PLN.              4.2512
+                           PFLICHT, wenn Währung NICHT PLN ist!
+                           Bedeutung: 1 [Währung] = X PLN.
+  18  lieferdatum          Liefer-/Leistungsdatum (YYYY-MM-DD). 2026-06-22
+                           Erscheint im Feld P_6 der Rechnung.
+  19  zahlungsart          Zahlungsweise, siehe erlaubte Werte. Überweisung
+  20  fälligkeit           Zahlungsziel / Fälligkeit            2026-07-07
+                           (YYYY-MM-DD).
+  21  bankkonto            IBAN / Kontonummer (Leerzeichen      PL61109010140000071219812874
+                           werden automatisch entfernt).
+  22  belegrabatt          Rabatt auf die GESAMTE Rechnung.     150   bzw.  10%
+                           Absoluter Netto-Betrag oder Prozent
+                           (mit %). Senkt Netto UND MwSt.
+                           Siehe Abschnitt 8. Pro Rechnung in
+                           jeder Positionszeile identisch.
+
+
+--------------------------------------------------------------------------------
+  4) ERLAUBTE WERTE
+--------------------------------------------------------------------------------
+
+  MwSt-Satz (Spalte 15):
+     23, 8, 5          = Prozentsätze (23 = polnischer Regelsatz)
+     0                 = 0 % — Art wird automatisch nach Käuferland bestimmt,
+                         siehe Abschnitt 5)
+     zw                = steuerbefreit (zwolniony)
+     np                = nicht steuerbar (nie podlega)
+     oo                = Reverse Charge (odwrotne obciążenie)
+
+     HINWEIS: '22' ist unüblich — in Polen gilt seit 2011 der Regelsatz 23 %.
+     Der Wert wird trotzdem wie angegeben übermittelt, aber im Protokoll als
+     Hinweis vermerkt. (Die App übermittelt grundsätzlich immer; sie prüft die
+     inhaltliche Richtigkeit nicht.)
+
+     Explizite 0 %-Codes (übersteuern die Automatik aus Abschnitt 5):
+     0-eu   = 0 % innergemeinschaftliche Lieferung (WDT)
+     0-exp  = 0 % Export (Lieferung außerhalb der EU)
+     0-dom  = 0 % Inland (krajowa)
+
+  Zahlungsart (Spalte 19) — Deutsch, Polnisch oder Englisch möglich:
+     Überweisung / Przelew / bank_transfer   → Banküberweisung
+     Bar / Gotówka / cash                    → Barzahlung
+     Karte / Karta / card                    → Kartenzahlung
+     Scheck / Czek / check                   → Scheck
+     Kredit / Kredyt / credit                → Kredit
+     Gutschein / Bon / voucher               → Gutschein
+     Mobil / Mobilna / mobile                → mobile Zahlung
+
+
+--------------------------------------------------------------------------------
+  5) STEUERSATZ 0 % — INLAND, INNERGEMEINSCHAFTLICH (WDT) ODER EXPORT
+--------------------------------------------------------------------------------
+
+  Das polnische FA(3)-Schema unterscheidet drei Arten von 0 %. Die App wählt sie
+  bei mwst_satz = 0 AUTOMATISCH anhand des Käuferlandes (Spalte 9):
+
+     Käuferland PL              → 0 % Inland          (Feld P_13_6_1)
+     Käuferland EU, ≠ PL        → 0 % WDT             (Feld P_13_6_2)
+     Käuferland außerhalb EU    → 0 % Export          (Feld P_13_6_3)
+
+  WDT = wewnątrzwspólnotowa dostawa towarów = innergemeinschaftliche Lieferung.
+
+  • Für eine WDT sollte die USt-IdNr. des Käufers (Spalte 8) angegeben sein.
+    Fehlt sie, wird trotzdem übermittelt (mit Hinweis) — KSeF kann jedoch
+    ablehnen.
+  • Stimmt die Automatik im Einzelfall nicht, kannst du sie mit den expliziten
+    Codes aus Abschnitt 4 übersteuern (0-eu / 0-exp / 0-dom).
+  • Die als EU behandelten Länder: AT BE BG HR CY CZ DK EE FI FR DE GR HU IE IT
+    LV LT LU MT NL PL PT RO SK SI ES SE.
+
+
+--------------------------------------------------------------------------------
+  6) WÄHRUNG — WICHTIG
+--------------------------------------------------------------------------------
+
+  • Ohne Angabe in Spalte 16 wird automatisch PLN verwendet.
+  • Bei jeder Fremdwährung (EUR, USD, ...) sollte in Spalte 17 ein Wechselkurs
+    zu PLN angegeben werden — das verlangt das polnische Steuerrecht für die
+    Umrechnung der Mehrwertsteuer. Fehlt der Kurs, wird trotzdem übermittelt
+    (mit Hinweis) — KSeF kann jedoch ablehnen.
+  • Der Kurs gilt pro Rechnung (steht in jeder Positionszeile derselben Rechnung).
+
+
+--------------------------------------------------------------------------------
+  7) AUSLÄNDISCHE GESCHÄFTSPARTNER
+--------------------------------------------------------------------------------
+
+  • Ist das Käufer-Land NICHT PL und eine Steuernummer angegeben, wird diese
+    automatisch als EU-USt-IdNr. behandelt. Trägst du die Nummer ohne Länder-
+    präfix ein (z. B. 811234567), wird der Ländercode vorangestellt (DE811234567).
+    Du kannst das Präfix auch direkt mitschreiben (DE811234567) — beides klappt.
+
+
+--------------------------------------------------------------------------------
+  8) BELEGRABATT (Rabatt auf die ganze Rechnung, Spalte 22)
+--------------------------------------------------------------------------------
+
+  Ein Rabatt, der am Ende der Rechnung auf die Gesamtsumme gewährt wird und die
+  Umsatzsteuer mindert (echter Preisnachlass).
+
+  So gibst du ihn an (Spalte 22, in JEDER Positionszeile derselben Rechnung gleich):
+     150     = 150 (Netto) Rabatt auf die ganze Rechnung
+     10%     = 10 % Rabatt auf das Positions-Netto
+
+  Wie die App ihn verarbeitet:
+  • Der Betrag wird proportional nach Netto auf alle Positionen verteilt und dort
+    als Positionsrabatt (RabatOpust) ausgewiesen.
+  • Dadurch sinken Bemessungsgrundlage (Netto) UND Mehrwertsteuer korrekt — auch
+    bei mehreren Steuersätzen (jeder Satz wird anteilig gemindert).
+  • Der absolute Betrag ist NETTO zu verstehen. Rundungsdifferenzen werden der
+    größten Position zugeschlagen, sodass die Summe exakt stimmt.
+
+  Beispiel: Positionen 1000 @23% + 500 @5%, Belegrabatt 300 (= 20%):
+     -> 800 @23% (MwSt 184) + 400 @5% (MwSt 20)  =  Brutto 1404.
+
+  Nur den ZAHLBETRAG mindern (ohne MwSt-Wirkung, z. B. Anzahlung)? Das ist ein
+  anderer Fall (FA(3)-Abschnitt „Rozliczenie/Odliczenia") — sag Bescheid, dann
+  bauen wir dafür ein separates Feld.
+
+
+--------------------------------------------------------------------------------
+  9) MEHRERE POSITIONEN PRO RECHNUNG
+--------------------------------------------------------------------------------
+
+  Eine Rechnung mit mehreren Positionen = mehrere Zeilen mit DERSELBEN
+  Rechnungsnummer (Spalte 1). Die Kopfdaten (Datum, Verkäufer, Käufer, Währung,
+  Zahlung ...) wiederholst du in jeder Zeile identisch. Beispiel:
+
+     "FV/2026/06/0003", ... ,"Puten-Unterkeule","1238.50","kg","4.45","5", ...
+     "FV/2026/06/0003", ... ,"Puten-Abschnitte TK","526.00","kg","3.20","5", ...
+
+  → ergibt EINE Rechnung mit ZWEI Positionen.
+
+
+--------------------------------------------------------------------------------
+  10) ÜBERMITTLUNG & HINWEISE
+--------------------------------------------------------------------------------
+
+  WICHTIG: Die App übermittelt IMMER alle Rechnungen — auch mit unüblichen oder
+  fehlenden Werten. Sie prüft die inhaltliche Richtigkeit NICHT und blockiert
+  nicht. Auffällige Werte werden lediglich als Hinweis ins Protokoll geschrieben.
+  Die inhaltliche Korrektheit (Beträge, Steuersätze) liegt in deiner Verantwortung.
+
+  Typische Hinweise (Rechnung wird trotzdem gesendet):
+  • Steuersatz '22'                         → 23 ist der Regelsatz.
+  • WDT (EU-Lieferung, 0 %) ohne USt-IdNr.  → KSeF kann ablehnen.
+  • Fremdwährung ohne Wechselkurs           → KSeF kann ablehnen.
+  • Unbekannter mwst_satz                   → wird als 23 % gesendet.
+
+  Nur technisch Unmögliches wird NICHT gesendet (die XML lässt sich nicht bauen):
+  • Betrag/Menge nicht numerisch (z. B. 'abc' statt 12.50).
+  • Rechnungsdatum fehlt oder falsches Format (immer YYYY-MM-DD).
+
+  Weitere Formatregeln:
+  • Semikolon statt Komma als Trennzeichen  → nur Komma wird unterstützt.
+  • NIP mit Bindestrichen/Leerzeichen       → Verkäufer-NIP nur 10 Ziffern.
+  • Unterschiedliche Kopfdaten bei gleicher Rechnungsnummer → es zählt die
+    erste Zeile; halte die Kopfdaten je Rechnung einheitlich.
+
+================================================================================
+  Stand: FA(3)-Schema. Bei Rückfragen die Beispieldatei rechnungen_vorlage.csv
+  als Muster verwenden.
+================================================================================
