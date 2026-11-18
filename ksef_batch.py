@@ -17,7 +17,7 @@ from ksef_utils import (
     _csv_reader, _normalize_nip, group_rows, build_invoice_xml,
     generate_pdf, write_protocol, setup_dirs,
     extract_response, download_upo, invoice_warnings,
-    build_qr_url, write_feedback_csv,
+    build_qr_url, write_feedback_csv, schema_check_status,
 )
 
 # ── Einstellungen laden ───────────────────────────────────────────────────────
@@ -81,6 +81,9 @@ def main(no_wait: bool = False):
     proto.log(f"Umgebung:          {env}")
     proto.log(f"NIP:               {nip}")
     proto.log(f"Authentifizierung: {auth_method}")
+    schema_info = schema_check_status()
+    proto.log("Schemapruefung:    " + ("aktiv (FA(3)-XSD)" if not schema_info
+                                       else f"NICHT aktiv — {schema_info}"))
 
     # ── CSV-Dateien suchen ──
     csv_files = sorted(DIR_RECHNUNGEN.glob("*.csv"))

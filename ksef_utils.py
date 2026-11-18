@@ -72,6 +72,9 @@ EU_COUNTRIES = {
     "SI", "ES", "SE",
 }
 
+# Abweichende USt-IdNr.-Praefixe (Laendercode ISO → EU-VAT-Praefix)
+_VAT_PREFIX = {"GR": "EL"}
+
 # Explizite 0%-Codes zur Übersteuerung der automatischen Länder-Zuordnung
 _ZERO_WDT_CODES    = {"0-eu", "0eu", "0-ig", "0ig", "0-wdt", "0wdt", "wdt", "ig"}
 _ZERO_EXPORT_CODES = {"0-exp", "0exp", "0-export", "0export", "export", "exp"}
@@ -452,12 +455,24 @@ invoice_warnings = _invoice_warnings
 def _entity_kwargs(name: str, nip: str, land: str, adresse: str) -> dict:
     """Baut die seller()/buyer()-Argumente; auslaendische Steuer-IDs -> eu_vat_id."""
     kw = {"name": name, "country_code": land, "address_line_1": adresse}
+    nip = nip.replace(" ", "")
     if nip:
         if land == "PL":
             kw["tax_id"] = nip
+        elif land in EU_COUNTRIES:
+            # EU-Partner: USt-IdNr. mit Laenderpraefix. Griechenland nutzt 'EL', nicht 'GR'.
+            prefix = _VAT_PREFIX.get(land, land)
+            if nip[:2].isalpha():
+                vat = nip.upper()
+                if vat[:2] == "GR":
+                    vat = "EL" + vat[2:]
+            else:
+                vat = f"{prefix}{nip}"
+            kw["eu_vat_id"] = vat
         else:
-            # Nicht-polnische Entitaeten brauchen eu_vat_id (mit Laenderpraefix)
-            kw["eu_vat_id"] = nip if nip[:2].isalpha() else f"{land}{nip}"
+            # Nicht-EU-Partner (z. B. RS, CH, GB): Steuernummer als sonstige Kennung
+            # (FA(3): KodKraju + NrID), kein EU-USt-Praefix
+            kw["other_id"] = nip
     return kw
 
 
@@ -578,7 +593,64 @@ def build_invoice_xml(group: list[dict]) -> bytes:
         builder = builder.add_line(**line_kwargs)
 
     xml = builder.done().done().to_xml()
-    return xml.encode("utf-8") if isinstance(xml, str) else xml
+    xml_bytes = xml.encode("utf-8") if isinstance(xml, str) else xml
+
+    # Vor dem Senden gegen das offizielle FA(3)-Schema pruefen: was hier scheitert,
+    # wuerde KSeF sicher ablehnen (z. B. Fehler 450) — dann gar nicht erst senden.
+    errors = validate_invoice_xml(xml_bytes)
+    if errors:
+        raise ValueError(f"Rechnung {nr} verletzt das FA(3)-Schema, nicht gesendet: "
+                         + " | ".join(errors))
+    return xml_bytes
+
+
+# ── FA(3)-Schemapruefung ──────────────────────────────────────────────────────
+
+_SCHEMA = None          # geladenes XMLSchema (Cache)
+_SCHEMA_STATUS = ""     # Grund, falls die Pruefung nicht verfuegbar ist
+
+
+def _load_schema():
+    """Laedt das FA(3)-XSD aus dem ksef2-Paket (einmalig)."""
+    global _SCHEMA, _SCHEMA_STATUS
+    if _SCHEMA is not None or _SCHEMA_STATUS:
+        return _SCHEMA
+    try:
+        import ksef2
+        from lxml import etree
+        xsd = Path(ksef2.__file__).parent / "infra" / "schema" / "fa3" / "definitions" / "schemat.xsd"
+        if not xsd.exists():
+            _SCHEMA_STATUS = f"Schema-Datei nicht gefunden: {xsd}"
+            return None
+        _SCHEMA = etree.XMLSchema(etree.parse(str(xsd)))
+    except Exception as exc:
+        _SCHEMA_STATUS = f"Schema nicht ladbar: {exc}"
+    return _SCHEMA
+
+
+def schema_check_status() -> str:
+    """Leer, wenn die Schemapruefung aktiv ist, sonst der Grund (fuer das Protokoll)."""
+    _load_schema()
+    return _SCHEMA_STATUS
+
+
+def validate_invoice_xml(xml_bytes: bytes) -> list[str]:
+    """Prueft die XML gegen das FA(3)-Schema. Liefert lesbare Fehlermeldungen
+    (max. 5); leere Liste = gueltig oder Pruefung nicht verfuegbar."""
+    schema = _load_schema()
+    if schema is None:
+        return []
+    import re
+    from lxml import etree
+    if schema.validate(etree.fromstring(xml_bytes)):
+        return []
+    msgs = []
+    for err in schema.error_log:
+        msg = re.sub(r"\{https?://[^}]*\}", "", err.message)   # Namespace entfernen
+        msgs.append(msg)
+        if len(msgs) >= 5:
+            break
+    return msgs
 
 
 # ── KSeF-Antwort auswerten ────────────────────────────────────────────────────

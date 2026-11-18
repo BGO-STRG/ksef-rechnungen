@@ -18,7 +18,7 @@ from ksef_utils import (
     _csv_reader, _normalize_nip, group_rows, build_invoice_xml,
     generate_pdf, write_protocol, setup_dirs, _calc_netto,
     extract_response, download_upo, invoice_warnings,
-    build_qr_url, write_feedback_csv, is_correction,
+    build_qr_url, write_feedback_csv, is_correction, schema_check_status,
 )
 
 try:
@@ -669,6 +669,12 @@ class KSeFApp(tk.Tk):
             client = Client(env)
             self._slog(f"↔ Verbinde ({s.get('env', 'TEST')}) …", "info")
             self._log(f"Verbinde mit KSeF {s.get('env', 'TEST')} …", "info")
+            schema_info = schema_check_status()
+            if schema_info:
+                self._slog(f"⚠ Schemaprüfung nicht aktiv: {schema_info}", "warn")
+                self._log(f"Schemaprüfung nicht aktiv: {schema_info}", "warn")
+            else:
+                self._log("Schemaprüfung aktiv (FA(3)-XSD)", "info")
 
             cert_path = s.get("cert_path", "").strip()
             if cert_path and Path(cert_path).exists():

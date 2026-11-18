@@ -167,6 +167,13 @@ Eine fertige Beispieldatei findest du unter:  rechnungen_vorlage.csv
     automatisch als EU-USt-IdNr. behandelt. Trägst du die Nummer ohne Länder-
     präfix ein (z. B. 811234567), wird der Ländercode vorangestellt (DE811234567).
     Du kannst das Präfix auch direkt mitschreiben (DE811234567) — beides klappt.
+  • Griechenland: Ländercode ist GR, das USt-Präfix aber EL. Die App setzt EL
+    automatisch (auch wenn GR123456789 angegeben ist).
+  • Käufer AUSSERHALB der EU (z. B. RS Serbien, CH Schweiz, GB, NO, UA):
+    Die Steuernummer wird NICHT als EU-USt-IdNr. übergeben, sondern als
+    ausländische Kennung (Ländercode + Nummer, ohne Präfix-Logik). Einfach die
+    Nummer so eintragen, wie sie auf den Unterlagen des Kunden steht.
+    Ohne Steuernummer wird der Käufer als „ohne Kennung“ gemeldet.
 
 
 --------------------------------------------------------------------------------
@@ -228,6 +235,14 @@ Eine fertige Beispieldatei findest du unter:  rechnungen_vorlage.csv
   Nur technisch Unmögliches wird NICHT gesendet (die XML lässt sich nicht bauen):
   • Betrag/Menge nicht numerisch (z. B. 'abc' statt 12.50).
   • Rechnungsdatum fehlt oder falsches Format (immer YYYY-MM-DD).
+  • Die fertige XML verletzt das offizielle FA(3)-Schema. Jede Rechnung wird
+    vor dem Senden dagegen geprüft — KSeF würde sie sonst sicher ablehnen
+    (meist als Fehler 450). Im Protokoll steht dann das betroffene Feld, z. B.:
+       Element 'NrVatUE': ... The value '8054475771B01' is not accepted by
+       the pattern '(\d|[A-Z]|\+|\*){1,12}'
+    → hier ist die EU-USt-IdNr. zu lang (max. 12 Zeichen nach dem Länder-
+      präfix; NL-Format: 9 Ziffern + B + 2 Ziffern).
+    Die übrigen Rechnungen der Datei werden normal gesendet.
 
   Weitere Formatregeln:
   • Semikolon statt Komma als Trennzeichen  → nur Komma wird unterstützt.
