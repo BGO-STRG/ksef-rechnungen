@@ -51,7 +51,18 @@ class Protokoll:
 
 # ── Hauptprogramm ─────────────────────────────────────────────────────────────
 
+def _safe_console():
+    """Verhindert Abstuerze bei umgeleiteter Ausgabe (Aufgabenplanung, Logdatei):
+    dort ist stdout oft cp1252 und kann Zeichen wie '─' oder 'ł' nicht darstellen."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except Exception:
+            pass
+
+
 def main(no_wait: bool = False):
+    _safe_console()
     setup_dirs()
 
     proto = Protokoll()
