@@ -32,6 +32,8 @@ CSV_FIELDNAMES = [
     # optionale Zusatzfelder
     "waehrung", "wechselkurs", "lieferdatum", "zahlungsart", "faelligkeit", "bankkonto",
     "belegrabatt",
+    # optionale Felder fuer Gutschriften / Korrekturrechnungen (Position 23-27)
+    "belegart", "korr_rechnungsnummer", "korr_datum", "korr_ksef_nr", "korrekturgrund",
 ]
 
 # Auch deutsche Feldnamen mit Umlauten akzeptieren
@@ -42,7 +44,12 @@ CSV_FIELDNAMES_ALT = [
     "position_name", "menge", "einheit", "einzelpreis_netto", "mwst_satz",
     "währung", "wechselkurs", "lieferdatum", "zahlungsart", "fälligkeit", "bankkonto",
     "belegrabatt",
+    "belegart", "korr_rechnungsnummer", "korr_datum", "korr_ksef_nr", "korrekturgrund",
 ]
+
+# Werte in Spalte 'belegart', die eine Korrekturrechnung (Gutschrift) kennzeichnen
+_CORRECTION_CODES = {"korrektur", "kor", "gutschrift", "korekta", "korygujaca",
+                     "korygująca", "correction", "credit_note"}
 
 # Normalisierung: Felder mit Umlauten → ohne Umlaute
 _FIELD_ALIASES = {
@@ -226,6 +233,13 @@ def _invoice_currency(group: list[dict]) -> str:
     return group[0].get("waehrung", "").strip().upper() or "PLN"
 
 
+def is_correction(group: list[dict]) -> bool:
+    """True, wenn die Rechnung als Korrekturrechnung (Gutschrift, KOR) zu senden ist."""
+    if not group:
+        return False
+    return str(group[0].get("belegart", "")).strip().lower() in _CORRECTION_CODES
+
+
 def _line_nettos(group: list[dict]) -> list[Decimal]:
     """Netto pro Position (Menge × Einzelpreis) VOR Belegrabatt."""
     nettos = []
@@ -242,7 +256,8 @@ def _line_nettos(group: list[dict]) -> list[Decimal]:
 def _belegrabatt_total(group: list[dict]) -> Decimal:
     """Gesamter Netto-Belegrabatt der Rechnung. Akzeptiert absoluten Betrag oder
     Prozent ('10%'). Prozent bezieht sich auf das Positions-Netto vor Rabatt."""
-    if not group:
+    if not group or is_correction(group):
+        # Bei Gutschriften wird kein Belegrabatt verarbeitet (Nachlass = negativer Preis)
         return Decimal("0")
     raw = str(group[0].get("belegrabatt", "")).strip().replace(" ", "")
     if not raw:
@@ -373,6 +388,48 @@ def _invoice_warnings(group: list[dict]) -> list[str]:
         elif kind == "unknown":
             warnings.append(f"Pos.{i}: mwst_satz '{mwst}' unbekannt — wird als 23% übermittelt")
 
+    # Gutschrift / Korrekturrechnung
+    nettos = _line_nettos(group)
+    if is_correction(group):
+        if not head.get("korr_rechnungsnummer", "").strip():
+            warnings.append("Gutschrift ohne korr_rechnungsnummer (Nummer der Original"
+                            "rechnung) — XML kann nicht gebaut werden")
+        korr_datum = head.get("korr_datum", "").strip()
+        if not korr_datum:
+            warnings.append("Gutschrift ohne korr_datum (Datum der Originalrechnung) — "
+                            "XML kann nicht gebaut werden")
+        else:
+            try:
+                date.fromisoformat(korr_datum)
+            except ValueError:
+                warnings.append(f"korr_datum '{korr_datum}' nicht im Format YYYY-MM-DD")
+        if not head.get("korr_ksef_nr", "").strip():
+            warnings.append("Gutschrift ohne korr_ksef_nr — Originalrechnung wird als "
+                            "'außerhalb KSeF ausgestellt' gekennzeichnet")
+        if head.get("belegrabatt", "").strip():
+            warnings.append("Belegrabatt wird bei Gutschriften ignoriert — Nachlass als "
+                            "negativen Einzelpreis angeben")
+        for i, row in enumerate(group, 1):
+            try:
+                m = Decimal(str(row.get("menge", "0")).strip().replace(",", "."))
+                p = Decimal(str(row.get("einzelpreis_netto", "0")).strip().replace(",", "."))
+            except InvalidOperation:
+                continue
+            if m < 0 and p < 0:
+                warnings.append(f"Pos.{i}: Menge UND Einzelpreis negativ — ergibt einen "
+                                f"POSITIVEN Betrag (Nachbelastung statt Gutschrift)")
+        if sum(nettos) > 0:
+            warnings.append(f"Gutschrift mit positivem Netto ({sum(nettos):,.2f}) — "
+                            f"wird als Nachbelastung übermittelt")
+    else:
+        for i, n in enumerate(nettos, 1):
+            if n < 0:
+                warnings.append(f"Pos.{i}: negativer Betrag ({n:,.2f}) ohne belegart="
+                                f"korrektur — wird als NORMALE Rechnung übermittelt")
+        if head.get("korr_rechnungsnummer", "").strip():
+            warnings.append("korr_rechnungsnummer angegeben, aber belegart ist nicht "
+                            "'korrektur' — Korrekturangaben werden ignoriert")
+
     if "zero_wdt" in line_kinds and not head.get("kaeufer_nip", "").strip():
         warnings.append("0% innergemeinschaftliche Lieferung (WDT) ohne USt-IdNr. des "
                         "Käufers — KSeF kann ablehnen")
@@ -431,15 +488,40 @@ def build_invoice_xml(group: list[dict]) -> bytes:
         adresse=head.get("kaeufer_adresse", "").strip(),
     )
 
-    body = (
+    base = (
         FA3InvoiceBuilder()
         .header(system_info="KSeF-App v1.0")
         .seller(**seller_kwargs)
         .buyer(**buyer_kwargs)
-        .standard()
-        .issue_date(issue_date)
-        .invoice_number(nr)
     )
+
+    if is_correction(group):
+        # Gutschrift / Korrekturrechnung (RodzajFaktury = KOR), Differenzmethode:
+        # die Positionen enthalten nur die Aenderung (negative Menge oder Preis).
+        korr_nr = head.get("korr_rechnungsnummer", "").strip()
+        korr_datum_raw = head.get("korr_datum", "").strip()
+        if not korr_nr:
+            raise ValueError(f"Gutschrift {nr}: korr_rechnungsnummer (Nummer der "
+                             f"Originalrechnung) fehlt")
+        try:
+            korr_datum = date.fromisoformat(korr_datum_raw)
+        except ValueError:
+            raise ValueError(f"Gutschrift {nr}: korr_datum '{korr_datum_raw}' fehlt oder "
+                             f"nicht im Format YYYY-MM-DD")
+        korr_ksef = head.get("korr_ksef_nr", "").strip()
+        body = base.correction().issue_date(issue_date).invoice_number(nr)
+        korr = body.correction().add_corrected_invoice(
+            issue_date=korr_datum,
+            invoice_number=korr_nr,
+            ksef_id=korr_ksef or None,
+            outside_ksef=not korr_ksef,
+        )
+        grund = head.get("korrekturgrund", "").strip()
+        if grund:
+            korr = korr.reason(grund)
+        body = korr.done()
+    else:
+        body = base.standard().issue_date(issue_date).invoice_number(nr)
 
     # Währung (Standard PLN) + Wechselkurs bei Fremdwährung
     waehrung = head.get("waehrung", "").strip().upper() or "PLN"
@@ -822,6 +904,15 @@ def write_protocol(
             f"  Positionen:    {pos}",
             f"  Währung:       {cur}",
         ]
+        if is_correction(group):
+            ksef_ref = head.get("korr_ksef_nr", "").strip() or "außerhalb KSeF"
+            lines += [
+                f"  Belegart:      GUTSCHRIFT / Korrekturrechnung (KOR)",
+                f"  Korrigiert:    {head.get('korr_rechnungsnummer','').strip()} vom "
+                f"{head.get('korr_datum','').strip()}  (KSeF: {ksef_ref})",
+            ]
+            if head.get("korrekturgrund", "").strip():
+                lines.append(f"  Grund:         {head.get('korrekturgrund','').strip()}")
         # Zusatzangaben nur wenn vorhanden
         if head.get("wechselkurs", "").strip() and cur != "PLN":
             lines.append(f"  Wechselkurs:   {head.get('wechselkurs','').strip()}  (1 {cur} → PLN)")

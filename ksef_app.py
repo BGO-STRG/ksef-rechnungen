@@ -18,7 +18,7 @@ from ksef_utils import (
     _csv_reader, _normalize_nip, group_rows, build_invoice_xml,
     generate_pdf, write_protocol, setup_dirs, _calc_netto,
     extract_response, download_upo, invoice_warnings,
-    build_qr_url, write_feedback_csv,
+    build_qr_url, write_feedback_csv, is_correction,
 )
 
 try:
@@ -611,7 +611,8 @@ class KSeFApp(tk.Tk):
                     head.get("rechnungsnummer", ""),
                     head.get("datum", ""),
                     head.get("kaeufer_name", ""),
-                    f"{netto:,.2f}" + (f" ({pos} Pos.)" if pos > 1 else ""),
+                    f"{netto:,.2f}" + (f" ({pos} Pos.)" if pos > 1 else "")
+                    + (" Gutschrift" if is_correction(group) else ""),
                 ))
             self._slog(f"✓ CSV geladen: {len(self._rows)} Rechnung(en) aus {len(raw)} Zeile(n)", "ok")
             self._log(f"CSV geladen: {path} ({len(raw)} Zeilen → {len(self._rows)} Rechnungen)", "ok")

@@ -17,7 +17,8 @@ Eine fertige Beispieldatei findest du unter:  rechnungen_vorlage.csv
   • Zeilenende:     LF oder CR/LF — beides wird akzeptiert.
   • Überschrift:    optional. Mit Überschriftzeile ist die Spaltenreihenfolge egal,
                     weil nach Spaltennamen zugeordnet wird. Ohne Überschrift muss
-                    die Reihenfolge exakt der Tabelle unten entsprechen (Spalte 1–22).
+                    die Reihenfolge exakt der Tabelle unten entsprechen (Spalte 1–27).
+                    Ältere Dateien mit nur 15 oder 22 Spalten funktionieren weiter.
   • Mehrere Dateien: Es dürfen mehrere CSV-Dateien gleichzeitig im Ordner liegen.
 
 
@@ -74,6 +75,22 @@ Eine fertige Beispieldatei findest du unter:  rechnungen_vorlage.csv
                            (mit %). Senkt Netto UND MwSt.
                            Siehe Abschnitt 8. Pro Rechnung in
                            jeder Positionszeile identisch.
+                           Bei Gutschriften NICHT verwenden.
+
+  Spalten 23 bis 27 — nur für GUTSCHRIFTEN (Korrekturrechnungen), siehe
+  Abschnitt 11. Bei normalen Rechnungen leer lassen.
+
+  #   Spaltenname          Beschreibung                         Beispiel
+  --  -------------------  -----------------------------------  --------------------
+  23  belegart             'korrektur' = Gutschrift.            korrektur
+                           Leer = normale Rechnung.
+  24  korr_rechnungsnummer Nummer der ORIGINALrechnung.         FV/2026/06/0003
+  25  korr_datum           Datum der Originalrechnung           2026-06-24
+                           (YYYY-MM-DD).
+  26  korr_ksef_nr         KSeF-Nummer der Originalrechnung.    5555555555-20260624-...
+                           Leer = Original wurde außerhalb
+                           KSeF ausgestellt.
+  27  korrekturgrund       Grund der Korrektur (empfohlen).     Rücksendung
 
 
 --------------------------------------------------------------------------------
@@ -217,6 +234,45 @@ Eine fertige Beispieldatei findest du unter:  rechnungen_vorlage.csv
   • NIP mit Bindestrichen/Leerzeichen       → Verkäufer-NIP nur 10 Ziffern.
   • Unterschiedliche Kopfdaten bei gleicher Rechnungsnummer → es zählt die
     erste Zeile; halte die Kopfdaten je Rechnung einheitlich.
+
+--------------------------------------------------------------------------------
+  11) GUTSCHRIFTEN (KORREKTURRECHNUNGEN)
+--------------------------------------------------------------------------------
+
+  Eine Gutschrift wird in KSeF als Korrekturrechnung (faktura korygująca, KOR)
+  übermittelt. Die Positionen enthalten NUR DIE ÄNDERUNG (Differenzmethode).
+
+  So legst du eine Gutschrift an:
+  • rechnungsnummer (Sp. 1)  = EIGENE Nummer der Gutschrift, z. B. KOR/2026/11/0001
+  • datum (Sp. 2)            = Ausstellungsdatum der Gutschrift
+  • Verkäufer, Käufer, MwSt-Satz, Währung wie auf der Originalrechnung
+  • belegart (Sp. 23)        = korrektur
+  • korr_rechnungsnummer, korr_datum, korr_ksef_nr (Sp. 24–26) = Daten der
+    Originalrechnung. Die KSeF-Nummer steht in der Rückmelde-CSV
+    (Ergebnisse\*_ksef.csv), die beim Versand des Originals erzeugt wurde.
+
+  VORZEICHEN — pro Position ist GENAU EINER der beiden Werte negativ:
+     Rücksendung / weniger Menge:  menge NEGATIV,   einzelpreis_netto positiv
+        "-100","kg","4.45"   →  Netto -445,00
+     Preisnachlass:                menge positiv,   einzelpreis_netto NEGATIV
+        "526.00","kg","-0.20"  →  Netto -105,20
+
+  Netto, MwSt und Brutto stehen NICHT in der CSV — die App berechnet sie
+  aus Menge × Preis, die Summen werden dadurch automatisch negativ.
+  Sind Menge UND Preis negativ, ergibt das einen POSITIVEN Betrag (Nachbelastung)!
+
+  Weitere Regeln:
+  • Mehrere Positionen = mehrere Zeilen mit derselben Gutschrift-Nummer;
+    Spalten 23–27 in jeder Zeile identisch.
+  • Belegrabatt (Sp. 22) wird bei Gutschriften ignoriert — Nachlass als
+    negativen Einzelpreis angeben.
+  • Fehlt korr_rechnungsnummer oder korr_datum, wird die Gutschrift NICHT
+    gesendet (Fehler im Protokoll).
+  • Negative Beträge OHNE belegart=korrektur werden als NORMALE Rechnung
+    gesendet (mit Hinweis im Protokoll) — das ist fast immer falsch.
+
+  Beispiel siehe rechnungen_vorlage.csv (Gutschrift KOR/2026/11/0001).
+
 
 ================================================================================
   Stand: FA(3)-Schema. Bei Rückfragen die Beispieldatei rechnungen_vorlage.csv
